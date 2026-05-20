@@ -3,6 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Camera, CameraOff, Eye, EyeOff, Scan } from 'lucide-react'
 import { useMediaPipe } from '../../../hooks/useMediaPipe'
 import { useTTS } from '../../../hooks/useTTS'
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
+import { db } from '../../../firebase/config'
+import { useAuth } from '../../../context/AuthContext'
+
 
 export default function MLMode({ onGestureOutput }) {
   const [active,     setActive]     = useState(false)
@@ -11,6 +15,7 @@ export default function MLMode({ onGestureOutput }) {
   const [showVideo,  setShowVideo]  = useState(true)
   const spokenRef = useRef(null)
   const tts = useTTS()
+  const { user } = useAuth()
 
   const handleGesture = useCallback((g) => {
     const now = Date.now()
@@ -19,6 +24,14 @@ export default function MLMode({ onGestureOutput }) {
     setLastGesture({ ...g, ts: now })
     setLog(p => [{ ...g, id: now }, ...p.slice(0,6)])
     tts.speak(g.text)
+    if (user) {
+  addDoc(collection(db, 'users', user.uid, 'history'), {
+    text:       g.text,
+    confidence: g.confidence,
+    mode:       'camera',
+    createdAt:  serverTimestamp(),
+  }).catch(() => {})
+}
     onGestureOutput?.(g.text)
   }, [tts, onGestureOutput])
 

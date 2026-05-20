@@ -1,264 +1,278 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Circle, Square, CheckCircle, AlertTriangle } from 'lucide-react'
-import { useMediaPipe } from '../../hooks/useMediaPipe'
+import { Circle, Square, CheckCircle } from 'lucide-react'
+import { useMediaPipe }                  from '../../hooks/useMediaPipe'
 import { landmarksToFeatures, sensorToFeatures } from '../../utils/knnClassifier'
 
-const SAMPLES_NEEDED  = 40
-const SAMPLE_INTERVAL = 60   // faster sampling
+const NEED     = 40
+const INTERVAL = 60   // ms
 
-export default function GestureRecorder({ source, fingerData, rawData, onSamplesReady }) {
-  const [phase,     setPhase]     = useState('idle')
-  const [count,     setCount]     = useState(0)
-  const [cdNum,     setCdNum]     = useState(3)
-  const [camActive, setCamActive] = useState(false)
+export default function GestureRecorder({ source, fingerData, onSamplesReady }) {
+  const [phase, setPhase] = useState('idle')   // idle | countdown | recording | done
+  const [count, setCount] = useState(0)
+  const [cd,    setCd]    = useState(3)
+  const [camOn, setCamOn] = useState(false)
 
-  const samplesRef  = useRef([])
-  const intervalRef = useRef(null)
-  const cdRef       = useRef(null)
+  const buf      = useRef([])
+  const ticker   = useRef(null)
+  const cdTimer  = useRef(null)
 
   const { videoRef, canvasRef, cameraReady, handVisible }
-    = useMediaPipe({ onGesture: () => {}, enabled: source === 'camera' && camActive })
+    = useMediaPipe({ onGesture: () => {}, enabled: source === 'camera' && camOn })
 
-  function collectSample() {
+  function collect() {
     let feat = null
-
     if (source === 'camera') {
       const lms = window.__syntalkLandmarks
       if (lms) feat = landmarksToFeatures(lms)
     } else {
-      // Hardware: use NORMALIZED fingerData (not raw)
-      // fingerData = [0, idx, mid, rng, pky] all 0-1
-      if (fingerData?.length === 5) {
-        feat = sensorToFeatures(fingerData)  // [idx, mid, rng, pky]
-      }
+      if (fingerData?.length === 5) feat = sensorToFeatures(fingerData)
     }
-
     if (!feat) return
-    samplesRef.current.push(feat)
-    setCount(samplesRef.current.length)
-    if (samplesRef.current.length >= SAMPLES_NEEDED) finishRecording()
+    buf.current.push(feat)
+    setCount(buf.current.length)
+    if (buf.current.length >= NEED) finish()
   }
 
   function startCountdown() {
-    samplesRef.current = []
-    setCount(0)
-    setPhase('countdown')
-    let n = 3
-    setCdNum(n)
-    cdRef.current = setInterval(() => {
+    buf.current = []; setCount(0)
+    let n = 3; setCd(n); setPhase('countdown')
+    cdTimer.current = setInterval(() => {
       n--
-      if (n <= 0) { clearInterval(cdRef.current); startCapture() }
-      else setCdNum(n)
+      if (n <= 0) { clearInterval(cdTimer.current); startRecording() }
+      else setCd(n)
     }, 1000)
   }
 
-  function startCapture() {
+  function startRecording() {
     setPhase('recording')
-    intervalRef.current = setInterval(collectSample, SAMPLE_INTERVAL)
+    ticker.current = setInterval(collect, INTERVAL)
   }
 
-  function finishRecording() {
-    clearInterval(intervalRef.current)
+  function finish() {
+    clearInterval(ticker.current)
     setPhase('done')
-    onSamplesReady?.(samplesRef.current)
+    onSamplesReady?.(buf.current)
   }
 
-  function cancelRecording() {
-    clearInterval(intervalRef.current)
-    clearInterval(cdRef.current)
-    samplesRef.current = []
-    setCount(0)
-    setPhase('idle')
+  function cancel() {
+    clearInterval(ticker.current)
+    clearInterval(cdTimer.current)
+    buf.current = []; setCount(0); setPhase('idle')
   }
 
   useEffect(() => () => {
-    clearInterval(intervalRef.current)
-    clearInterval(cdRef.current)
+    clearInterval(ticker.current)
+    clearInterval(cdTimer.current)
   }, [])
 
-  const progress  = Math.min(100, (count / SAMPLES_NEEDED) * 100)
-
-  // Check if hardware data looks calibrated
-  const isDataGood = source === 'hardware'
-    ? fingerData?.some(v => v > 0.05 && v < 0.95)   // at least some variation
-    : true
-
-  const canRecord = source === 'hardware'
+  const pct    = Math.min(100, (count / NEED) * 100)
+  const canRec = source === 'hardware'
     ? fingerData?.length === 5
-    : camActive && cameraReady
+    : camOn && cameraReady
+
+  const f = fingerData || [0, 0, 0, 0, 0]
 
   return (
-    <div className="flex flex-col gap-3">
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
 
-      {/* Camera preview */}
+      {/* ── Camera preview ─────────────────────────────── */}
       {source === 'camera' && (
-        <div>
-          {!camActive ? (
-            <button onClick={() => setCamActive(true)}
-              className="w-full py-6 rounded-xl text-center font-body"
-              style={{
-                fontSize: 13.5,
-                background: 'rgba(74,127,165,0.07)',
-                border: '1px dashed rgba(74,127,165,0.25)',
-                color: 'var(--text-muted)',
-              }}>
-              Click to activate camera
-            </button>
-          ) : (
-            <div className="relative rounded-xl overflow-hidden bg-black"
-              style={{ aspectRatio: '4/3' }}>
-              <video ref={videoRef} autoPlay playsInline muted
-                className="w-full h-full object-cover"
-                style={{ transform: 'scaleX(-1)' }} />
-              <canvas ref={canvasRef} width={640} height={480}
-                className="absolute inset-0 w-full h-full" />
-              <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-full"
-                style={{
-                  background: 'rgba(12,12,15,0.8)',
-                  border: handVisible ? '1px solid rgba(74,239,128,0.3)' : '1px solid var(--border)',
-                }}>
-                <span className={`w-1.5 h-1.5 rounded-full ${handVisible ? 'animate-pulse' : ''}`}
-                  style={{ background: handVisible ? '#4ade80' : 'var(--text-muted)' }} />
-                <span style={{ fontSize: 10, fontFamily: 'JetBrains Mono',
-                  color: handVisible ? '#86efac' : 'var(--text-muted)' }}>
-                  {handVisible ? 'detected' : 'no hand'}
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Hardware status + live normalized values */}
-      {source === 'hardware' && (
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-3 px-3 py-3 rounded-xl"
-            style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)' }}>
-            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${fingerData?.length === 5 ? 'animate-pulse' : ''}`}
-              style={{ background: fingerData?.length === 5 ? '#4ade80' : '#f87171' }} />
-            <div className="flex-1 min-w-0">
-              <p style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-                {fingerData?.length === 5 ? 'Glove connected — hold gesture still and record' : 'Connect glove first'}
-              </p>
-              {fingerData?.length === 5 && (
-                <div className="flex items-center gap-3 mt-1.5">
-                  {['I', 'M', 'R', 'P'].map((label, i) => {
-                    const val = fingerData[i + 1] ?? 0
-                    return (
-                      <div key={label} className="flex flex-col items-center gap-0.5">
-                        <div className="w-4 rounded overflow-hidden"
-                          style={{ height: 20, background: 'rgba(255,255,255,0.06)', position: 'relative' }}>
-                          <div style={{
-                            position: 'absolute', bottom: 0, left: 0, right: 0,
-                            height: `${val * 100}%`,
-                            background: 'linear-gradient(180deg,var(--accent-light),var(--accent))',
-                            borderRadius: 2,
-                            transition: 'height 0.1s',
-                          }} />
-                        </div>
-                        <span style={{ fontSize: 9, color: 'var(--text-muted)', fontFamily: 'JetBrains Mono' }}>
-                          {label}
-                        </span>
-                        <span style={{ fontSize: 9, color: 'var(--accent-light)', fontFamily: 'JetBrains Mono' }}>
-                          {val.toFixed(2)}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+        !camOn ? (
+          <button onClick={() => setCamOn(true)} style={{
+            width:'100%', padding:'22px 0', borderRadius:12, cursor:'pointer',
+            background:'rgba(74,127,165,0.07)',
+            border:'1px dashed rgba(74,127,165,0.28)',
+            color:'var(--text-muted)', fontSize:13.5, fontFamily:'DM Sans',
+          }}>
+            Click to activate camera
+          </button>
+        ) : (
+          <div style={{ position:'relative', borderRadius:12, overflow:'hidden', aspectRatio:'4/3', background:'#000' }}>
+            <video ref={videoRef} autoPlay playsInline muted
+              style={{ width:'100%', height:'100%', objectFit:'cover', transform:'scaleX(-1)' }}/>
+            <canvas ref={canvasRef} width={640} height={480}
+              style={{ position:'absolute', inset:0, width:'100%', height:'100%' }}/>
+            <div style={{
+              position:'absolute', top:8, right:8, display:'flex', alignItems:'center', gap:6,
+              padding:'4px 10px', borderRadius:20,
+              background:'rgba(12,12,15,0.85)',
+              border: handVisible ? '1px solid rgba(74,239,128,0.3)' : '1px solid var(--border)',
+            }}>
+              <div style={{
+                width:7, height:7, borderRadius:'50%',
+                background: handVisible ? '#4ade80' : 'var(--text-muted)',
+              }}/>
+              <span style={{ fontSize:10, fontFamily:'JetBrains Mono',
+                color: handVisible ? '#86efac' : 'var(--text-muted)' }}>
+                {handVisible ? 'Hand detected' : 'No hand'}
+              </span>
             </div>
           </div>
+        )
+      )}
 
-          {/* Warn if values look uncalibrated (all 0 or all 1) */}
-          {fingerData?.length === 5 && !isDataGood && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl"
-              style={{ background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.2)' }}>
-              <AlertTriangle size={13} style={{ color: '#fbbf24', flexShrink: 0 }} />
-              <p style={{ fontSize: 11.5, color: '#fde68a' }}>
-                Sensor values look off. Flex and release your fingers a few times to auto-calibrate, then record.
-              </p>
+      {/* ── Hardware: live finger bars ──────────────────── */}
+      {source === 'hardware' && (
+        <div style={{
+          padding:'14px 16px', borderRadius:12,
+          background:'rgba(255,255,255,0.03)',
+          border:'1px solid var(--border)',
+        }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+            <div style={{
+              width:8, height:8, borderRadius:'50%', flexShrink:0,
+              background: fingerData?.length===5 ? '#4ade80' : '#f87171',
+            }}/>
+            <p style={{ fontSize:12.5, color:'var(--text-secondary)', fontFamily:'DM Sans' }}>
+              {fingerData?.length===5
+                ? 'Glove active — hold your gesture still, then record'
+                : 'Connect your glove in Dashboard → Hardware mode first'}
+            </p>
+          </div>
+
+          {/* Finger bars */}
+          {fingerData?.length === 5 && (
+            <div style={{ display:'flex', gap:10, alignItems:'flex-end' }}>
+              {[
+                { label:'Index',  val: f[1] },
+                { label:'Middle', val: f[2] },
+                { label:'Ring',   val: f[3] },
+                { label:'Pinky',  val: f[4] },
+              ].map(({ label, val }) => (
+                <div key={label} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:4 }}>
+                  {/* Bar track */}
+                  <div style={{
+                    width:'100%', height:52,
+                    borderRadius:6, overflow:'hidden',
+                    background:'rgba(255,255,255,0.06)',
+                    position:'relative',
+                  }}>
+                    {/* Fill */}
+                    <div style={{
+                      position:'absolute', bottom:0, left:0, right:0,
+                      height:`${Math.max(2, val*100)}%`,
+                      background: val > 0.6
+                        ? 'linear-gradient(180deg,#4ade80,#22c55e)'
+                        : 'linear-gradient(180deg,var(--accent-light),var(--accent))',
+                      borderRadius:6,
+                      transition:'height 0.06s linear',
+                    }}/>
+                    {/* Value label */}
+                    <div style={{
+                      position:'absolute', inset:0,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                    }}>
+                      <span style={{
+                        fontSize:9, fontFamily:'JetBrains Mono',
+                        color: val > 0.45 ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)',
+                      }}>
+                        {Math.round(val*100)}%
+                      </span>
+                    </div>
+                  </div>
+                  <span style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
+                    {label.slice(0,3).toUpperCase()}
+                  </span>
+                </div>
+              ))}
             </div>
+          )}
+
+          {/* All-zero warning */}
+          {fingerData?.length===5 && f[1]===0 && f[2]===0 && f[3]===0 && f[4]===0 && (
+            <p style={{ fontSize:11.5, color:'#fde68a', marginTop:10 }}>
+              ⚠ All bars are 0. Open and close your fingers a few times to auto-calibrate.
+            </p>
           )}
         </div>
       )}
 
-      {/* Progress bar */}
+      {/* ── Progress ────────────────────────────────────── */}
       {(phase === 'recording' || phase === 'done') && (
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between">
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'JetBrains Mono', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <span style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'JetBrains Mono', letterSpacing:'0.1em', textTransform:'uppercase' }}>
               {phase === 'done' ? 'Complete' : 'Recording…'}
             </span>
-            <span style={{ fontSize: 11, color: 'var(--accent-light)', fontFamily: 'JetBrains Mono' }}>
-              {count} / {SAMPLES_NEEDED}
+            <span style={{ fontSize:11, color:'var(--accent-light)', fontFamily:'JetBrains Mono' }}>
+              {count} / {NEED}
             </span>
           </div>
-          <div className="w-full h-1.5 rounded-full overflow-hidden"
-            style={{ background: 'rgba(255,255,255,0.06)' }}>
-            <motion.div className="h-full rounded-full"
-              animate={{ width: `${progress}%` }}
-              transition={{ duration: 0.1 }}
+          <div style={{ height:5, borderRadius:3, overflow:'hidden', background:'rgba(255,255,255,0.06)' }}>
+            <motion.div
+              animate={{ width:`${pct}%` }} transition={{ duration:0.08 }}
               style={{
-                background: phase === 'done'
+                height:'100%', borderRadius:3,
+                background: phase==='done'
                   ? 'linear-gradient(90deg,#22c55e,#4ade80)'
                   : 'linear-gradient(90deg,var(--accent),var(--accent-light))',
-              }}
-            />
+              }}/>
           </div>
         </div>
       )}
 
-      {/* Countdown */}
+      {/* ── Countdown ───────────────────────────────────── */}
       <AnimatePresence>
         {phase === 'countdown' && (
-          <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0 }} className="text-center py-1">
-            <span className="font-display text-gradient" style={{ fontSize: 52, lineHeight: 1 }}>
-              {cdNum}
+          <motion.div initial={{ opacity:0, scale:0.6 }} animate={{ opacity:1, scale:1 }}
+            exit={{ opacity:0 }} style={{ textAlign:'center', padding:'4px 0' }}>
+            <span className="font-display text-gradient" style={{ fontSize:60, lineHeight:1 }}>
+              {cd}
             </span>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Buttons */}
+      {/* ── Buttons ─────────────────────────────────────── */}
       {phase === 'idle' && (
-        <button onClick={startCountdown} disabled={!canRecord}
-          className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-body
-            transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{
-            fontSize: 14, background: 'var(--accent)', color: '#fff',
-            boxShadow: '0 4px 20px rgba(74,127,165,0.22)',
-          }}>
-          <Circle size={13} fill="currentColor" /> Start Recording
+        <button onClick={startCountdown} disabled={!canRec} style={{
+          display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+          width:'100%', padding:'13px 0', borderRadius:12,
+          background: canRec ? '#4a7fa5' : 'rgba(74,127,165,0.28)',
+          color:'#fff', fontSize:14, fontFamily:'DM Sans', fontWeight:500,
+          border:'none', cursor: canRec ? 'pointer' : 'not-allowed',
+          boxShadow: canRec ? '0 4px 18px rgba(74,127,165,0.24)' : 'none',
+        }}>
+          <Circle size={14} fill="currentColor"/> Start Recording
         </button>
       )}
 
       {(phase === 'countdown' || phase === 'recording') && (
-        <button onClick={cancelRecording}
-          className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-body"
-          style={{
-            fontSize: 14, background: 'rgba(239,68,68,0.1)',
-            border: '1px solid rgba(239,68,68,0.2)', color: '#fca5a5',
-          }}>
-          <Square size={13} fill="currentColor" /> Cancel
+        <button onClick={cancel} style={{
+          display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+          width:'100%', padding:'13px 0', borderRadius:12,
+          background:'rgba(239,68,68,0.10)',
+          border:'1px solid rgba(239,68,68,0.22)',
+          color:'#fca5a5', fontSize:14, fontFamily:'DM Sans', cursor:'pointer',
+        }}>
+          <Square size={14} fill="currentColor"/> Cancel
         </button>
       )}
 
       {phase === 'done' && (
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-center gap-2 py-3 rounded-xl"
-            style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)' }}>
-            <CheckCircle size={15} style={{ color: '#4ade80' }} />
-            <span style={{ fontSize: 14, color: '#86efac' }}>{count} samples ready</span>
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          <div style={{
+            display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+            padding:'13px 0', borderRadius:12,
+            background:'rgba(34,197,94,0.10)',
+            border:'1px solid rgba(34,197,94,0.22)',
+          }}>
+            <CheckCircle size={16} style={{ color:'#4ade80' }}/>
+            <span style={{ fontSize:14, color:'#86efac', fontFamily:'DM Sans' }}>
+              {count} samples ready — save below
+            </span>
           </div>
-          <button onClick={cancelRecording}
-            style={{ fontSize: 12.5, color: 'var(--text-muted)', textAlign: 'center' }}>
+          <button onClick={cancel} style={{
+            fontSize:12.5, color:'var(--text-muted)',
+            textAlign:'center', background:'none', border:'none', cursor:'pointer',
+          }}>
             Re-record
           </button>
         </div>
       )}
+
+      <style>{`@keyframes pulse-dot { 0%,100%{opacity:1}50%{opacity:0.35} }`}</style>
     </div>
   )
 }

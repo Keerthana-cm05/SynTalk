@@ -1,228 +1,267 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Zap, Camera, Bluetooth, BluetoothOff, CameraOff } from 'lucide-react'
+import { Zap, Camera, Bluetooth, BluetoothOff, CameraOff, WifiOff } from 'lucide-react'
 import { useGloveWebSocket } from '../../../hooks/useGloveWebSocket'
-import { useGloveConnect } from '../../../hooks/useGloveConnect'
-import { useMediaPipe } from '../../../hooks/useMediaPipe'
-import { useTTS } from '../../../hooks/useTTS'
-import Hand3DLive from '../../../components/ui/Hand3DLive'
+import { useGloveConnect }   from '../../../hooks/useGloveConnect'
+import { useMediaPipe }      from '../../../hooks/useMediaPipe'
+import { useTTS }            from '../../../hooks/useTTS'
+import Hand3DLive            from '../../../components/ui/Hand3DLive'
+import { db }                from '../../../firebase/config'
+import { useAuth }           from '../../../context/AuthContext'
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 
 export default function HybridMode({ onGestureOutput }) {
-  const {
-    gloveConnected, fingerData, accelData, lastGesture: hwGesture,
-  } = useGloveWebSocket()
+  const glove  = useGloveWebSocket()
+  const conn   = useGloveConnect()
+  const tts    = useTTS()
+  const { user } = useAuth()
 
-  const {
-    ports, fetchPorts, selectedPort, setSelectedPort,
-    connecting, connectGlove, disconnectGlove,
-  } = useGloveConnect()
-
-  const [mlActive,     setMlActive]     = useState(false)
-  const [recognized,   setRecognized]   = useState([])
-  const [lastGesture,  setLastGesture]  = useState(null)
-  const [fusedConfidence, setFusedConfidence] = useState(0)
+  const [mlActive,    setMlActive]    = useState(false)
+  const [log,         setLog]         = useState([])
+  const [lastGesture, setLastGesture] = useState(null)
   const spokenRef = useRef(null)
-  const tts = useTTS()
 
-  // Fuse gesture from either source
-  const handleGesture = useCallback((gesture, source) => {
+  useEffect(() => { conn.fetchPorts() }, [])
+
+  const handleGesture = useCallback((g, source) => {
     const now = Date.now()
-    if (spokenRef.current && now - spokenRef.current < 1800) return
+    if (spokenRef.current && now - spokenRef.current < 1200) return
     spokenRef.current = now
 
-    // Boost confidence slightly in hybrid mode (both sources agree)
-    const boosted = Math.min(99, gesture.confidence + (source === 'both' ? 5 : 0))
-    const entry = {
-      text:       gesture.text,
-      confidence: boosted,
-      source,
-      ts:         now,
-      id:         now,
-    }
-
+    const entry = { ...g, source, ts: now, id: now }
     setLastGesture(entry)
-    setFusedConfidence(boosted)
-    setRecognized(prev => [entry, ...prev.slice(0, 7)])
-    tts.speak(gesture.text)
-    onGestureOutput?.(gesture.text)
-  }, [tts, onGestureOutput])
+    setLog(p => [entry, ...p.slice(0, 6)])
+    tts.speak(g.text)
+    onGestureOutput?.(g.text)
 
-  // Hardware gesture pipe
+    if (user) {
+      addDoc(collection(db, 'users', user.uid, 'history'), {
+        text:       g.text,
+        confidence: g.confidence,
+        mode:       'hybrid',
+        createdAt:  serverTimestamp(),
+      }).catch(() => {})
+    }
+  }, [tts, onGestureOutput, user])
+
+  // Hardware gestures
   useEffect(() => {
-    if (hwGesture) handleGesture(hwGesture, 'hardware')
-  }, [hwGesture])
+    if (glove.lastGesture) handleGesture(glove.lastGesture, 'hardware')
+  }, [glove.lastGesture])
 
-  // ML gesture pipe
-  const handleMLGesture = useCallback((g) => {
-    handleGesture(g, 'camera')
-  }, [handleGesture])
+  // ML gestures
+  const handleML = useCallback((g) => handleGesture(g, 'camera'), [handleGesture])
 
-  const {
-    videoRef, canvasRef, loading, cameraReady, handVisible,
-  } = useMediaPipe({ onGesture: handleMLGesture, enabled: mlActive })
+  const { videoRef, canvasRef, loading: mlLoading, cameraReady, handVisible }
+    = useMediaPipe({ onGesture: handleML, enabled: mlActive })
 
-  useEffect(() => { fetchPorts() }, [])
+  useEffect(() => {
+    if (!glove.gloveConnected && !mlActive) {
+      setLog([]); onGestureOutput?.('')
+    }
+  }, [glove.gloveConnected, mlActive])
 
-  const anythingActive = gloveConnected || mlActive
+  const anyActive = glove.gloveConnected || mlActive
 
   return (
     <div className="flex flex-col gap-4 h-full">
 
-      {/* ── Control bar ──────────────────────────────────────── */}
-      <div className="glass-raised rounded-2xl px-5 py-4 border border-white/5">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+      {/* Control bar */}
+      <div className="glass-raised rounded-2xl p-4"
+        style={{ border:'1px solid var(--border)' }}>
+        <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 flex-1">
-            {/* Hardware status */}
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-body ${
-              gloveConnected
-                ? 'bg-green-500/8 border-green-500/20 text-green-300'
-                : 'glass border-white/8 text-text-muted'
-            }`}>
-              {gloveConnected
-                ? <Bluetooth size={13} />
-                : <BluetoothOff size={13} />
-              }
-              {gloveConnected ? 'Glove' : 'No glove'}
-            </div>
-
-            <div className="text-text-muted text-xs font-mono">+</div>
-
-            {/* Camera status */}
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-body ${
-              cameraReady
-                ? 'bg-green-500/8 border-green-500/20 text-green-300'
-                : 'glass border-white/8 text-text-muted'
-            }`}>
-              {cameraReady
-                ? <Camera size={13} />
-                : <CameraOff size={13} />
-              }
-              {cameraReady ? 'Camera' : 'No camera'}
-            </div>
-
-            {gloveConnected && cameraReady && (
-              <div className="flex items-center gap-1.5 glass rounded-full px-3 py-1 border border-accent/20">
-                <Zap size={11} className="text-accent-light" />
-                <span className="text-[10px] font-mono text-accent-light">Hybrid active</span>
-              </div>
-            )}
+            <Zap size={16} style={{ color:'var(--accent-light)' }}/>
+            <span style={{ fontSize:14, color:'var(--text-primary)', fontFamily:'DM Sans' }}>
+              Hybrid Mode
+            </span>
+            <span style={{ fontSize:12, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
+              · Hardware + Camera combined
+            </span>
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Glove connect */}
-            {!gloveConnected && (
-              <select
-                value={selectedPort}
-                onChange={e => setSelectedPort(e.target.value)}
-                className="glass border border-white/8 rounded-xl px-3 py-2 text-xs
-                  font-mono text-text-secondary appearance-none cursor-pointer
-                  focus:outline-none bg-transparent"
-              >
-                {ports.length === 0
-                  ? <option value="">No ports</option>
-                  : ports.map(p => (
-                      <option key={p.path} value={p.path}
-                        style={{ background: '#16161a', color: '#f0f0f2' }}>
-                        {p.path}
-                      </option>
-                    ))
-                }
-              </select>
+            {/* Glove */}
+            {!glove.gloveConnected ? (
+              <>
+                <select
+                  value={conn.selectedPort}
+                  onChange={e => conn.setSelectedPort(e.target.value)}
+                  style={{
+                    appearance:'none', padding:'7px 12px', borderRadius:10,
+                    background:'rgba(15,15,22,0.95)', border:'1px solid var(--border)',
+                    color: conn.selectedPort ? 'var(--text-primary)' : 'var(--text-muted)',
+                    fontSize:12.5, fontFamily:'JetBrains Mono', outline:'none', cursor:'pointer',
+                    minWidth:120,
+                  }}
+                >
+                  {conn.ports.length===0
+                    ? <option value="">No ports</option>
+                    : conn.ports.map(p => (
+                        <option key={p.path} value={p.path}
+                          style={{ background:'#13131a', color:'#eeeef2' }}>
+                          {p.path}{p.isArduino?' ✓':''}
+                        </option>
+                      ))
+                  }
+                </select>
+                <button
+                  onClick={() => conn.connectGlove(conn.selectedPort)}
+                  disabled={conn.connecting || !conn.selectedPort}
+                  style={{
+                    display:'flex', alignItems:'center', gap:6,
+                    padding:'7px 14px', borderRadius:10,
+                    background:'rgba(74,127,165,0.15)',
+                    border:'1px solid rgba(74,127,165,0.28)',
+                    color:'var(--accent-light)', fontSize:13,
+                    fontFamily:'DM Sans', cursor:'pointer',
+                    opacity: conn.connecting ? 0.6 : 1,
+                  }}>
+                  {conn.connecting
+                    ? <div style={{ width:12, height:12, borderRadius:'50%', border:'2px solid var(--accent-light)', borderTopColor:'transparent', animation:'spin 0.75s linear infinite' }}/>
+                    : <Bluetooth size={13}/>
+                  }
+                  Glove
+                </button>
+              </>
+            ) : (
+              <button onClick={conn.disconnectGlove}
+                style={{
+                  display:'flex', alignItems:'center', gap:6,
+                  padding:'7px 14px', borderRadius:10,
+                  background:'rgba(74,127,165,0.12)',
+                  border:'1px solid rgba(74,127,165,0.22)',
+                  color:'var(--accent-light)', fontSize:13,
+                  fontFamily:'DM Sans', cursor:'pointer',
+                }}>
+                <Bluetooth size={13}/>
+                {conn.selectedPort || glove.glovePort}
+              </button>
             )}
 
-            <button
-              onClick={() => gloveConnected ? disconnectGlove() : connectGlove(selectedPort)}
-              disabled={connecting}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs
-                font-medium transition-all duration-300
-                ${gloveConnected
-                  ? 'glass border border-red-500/20 text-red-300 hover:bg-red-500/10'
-                  : 'bg-accent/80 hover:bg-accent text-white'
-                } disabled:opacity-50`}
-            >
-              {connecting
-                ? <div className="w-3 h-3 border border-white/40 border-t-white rounded-full animate-spin" />
-                : gloveConnected ? <BluetoothOff size={12} /> : <Bluetooth size={12} />
-              }
-              {gloveConnected ? 'Disconnect' : 'Glove'}
-            </button>
-
+            {/* Camera */}
             <button
               onClick={() => setMlActive(a => !a)}
-              disabled={loading}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs
-                font-medium transition-all duration-300
-                ${mlActive
-                  ? 'glass border border-red-500/20 text-red-300 hover:bg-red-500/10'
-                  : 'glass border border-accent/20 text-accent-light hover:bg-accent/10'
-                } disabled:opacity-50`}
-            >
-              {loading
-                ? <div className="w-3 h-3 border border-white/40 border-t-white rounded-full animate-spin" />
-                : mlActive ? <CameraOff size={12} /> : <Camera size={12} />
+              disabled={mlLoading}
+              style={{
+                display:'flex', alignItems:'center', gap:6,
+                padding:'7px 14px', borderRadius:10,
+                background: mlActive ? 'rgba(34,197,94,0.12)' : 'rgba(255,255,255,0.05)',
+                border: mlActive ? '1px solid rgba(34,197,94,0.25)' : '1px solid var(--border)',
+                color: mlActive ? '#86efac' : 'var(--text-muted)',
+                fontSize:13, fontFamily:'DM Sans', cursor:'pointer',
+              }}>
+              {mlLoading
+                ? <div style={{ width:12, height:12, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin 0.75s linear infinite' }}/>
+                : mlActive ? <Camera size={13}/> : <CameraOff size={13}/>
               }
-              {mlActive ? 'Stop cam' : 'Camera'}
+              Camera
             </button>
           </div>
         </div>
+
+        {/* Status badges */}
+        {anyActive && (
+          <div className="flex items-center gap-2 mt-3">
+            {glove.gloveConnected && (
+              <div style={{
+                display:'flex', alignItems:'center', gap:5,
+                padding:'3px 10px', borderRadius:20, fontSize:10,
+                background:'rgba(74,127,165,0.12)',
+                border:'1px solid rgba(74,127,165,0.22)',
+                color:'var(--accent-light)', fontFamily:'JetBrains Mono',
+              }}>
+                <span style={{ width:6, height:6, borderRadius:'50%', background:'#4ade80', display:'inline-block', animation:'pulse 2s infinite' }}/>
+                Glove active
+              </div>
+            )}
+            {mlActive && cameraReady && (
+              <div style={{
+                display:'flex', alignItems:'center', gap:5,
+                padding:'3px 10px', borderRadius:20, fontSize:10,
+                background:'rgba(34,197,94,0.10)',
+                border:'1px solid rgba(34,197,94,0.22)',
+                color:'#86efac', fontFamily:'JetBrains Mono',
+              }}>
+                <span style={{ width:6, height:6, borderRadius:'50%', background:'#4ade80', display:'inline-block', animation:'pulse 2s infinite' }}/>
+                Camera active
+              </div>
+            )}
+            {glove.gloveConnected && mlActive && (
+              <div style={{
+                display:'flex', alignItems:'center', gap:5,
+                padding:'3px 10px', borderRadius:20, fontSize:10,
+                background:'rgba(168,85,247,0.10)',
+                border:'1px solid rgba(168,85,247,0.22)',
+                color:'#d8b4fe', fontFamily:'JetBrains Mono',
+              }}>
+                <Zap size={9}/> Hybrid boost
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* ── Main area ─────────────────────────────────────────── */}
-      <div className="flex flex-col lg:flex-row gap-4 flex-1">
+      {/* Main area */}
+      <div className="flex gap-4 flex-1" style={{ minHeight:0 }}>
 
-        {/* Left: 3D hand + camera pip */}
-        <div className="flex-1 relative">
-          {/* 3D hand */}
-          <div className="glass-raised rounded-2xl border border-white/5 overflow-hidden min-h-[300px] h-full relative">
-            {!anythingActive && (
-              <div className="absolute inset-0 z-10 flex items-end justify-center pb-6 pointer-events-none">
-                <div className="glass rounded-xl px-4 py-2.5 border border-white/8 flex items-center gap-2">
-                  <Zap size={13} className="text-text-muted" />
-                  <span className="text-xs font-mono text-text-muted">
-                    Connect glove or start camera
-                  </span>
-                </div>
-              </div>
-            )}
-            {gloveConnected && (
-              <div className="absolute top-4 left-4 z-10 flex items-center gap-2
-                glass rounded-full px-3 py-1.5 border border-green-500/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-[10px] font-mono text-green-300 uppercase tracking-widest">Live</span>
-              </div>
-            )}
-            <Hand3DLive
-              fingerData={fingerData}
-              accelData={accelData}
-              isConnected={gloveConnected}
-            />
-          </div>
+        {/* Left: 3D hand + camera PiP */}
+        <div className="flex-1 glass-raised rounded-2xl overflow-hidden relative"
+          style={{ border:'1px solid var(--border)', minHeight:320 }}>
 
-          {/* Camera PiP — bottom right when active */}
+          {!anyActive && (
+            <div style={{
+              position:'absolute', inset:0, zIndex:10,
+              display:'flex', alignItems:'flex-end', justifyContent:'center',
+              paddingBottom:20, pointerEvents:'none',
+            }}>
+              <div style={{
+                display:'flex', alignItems:'center', gap:8,
+                padding:'10px 18px', borderRadius:12,
+                background:'rgba(12,12,15,0.90)', border:'1px solid var(--border)',
+              }}>
+                <WifiOff size={13} style={{ color:'var(--text-muted)' }}/>
+                <span style={{ fontSize:12.5, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
+                  Activate glove or camera to begin
+                </span>
+              </div>
+            </div>
+          )}
+
+          <Hand3DLive
+            fingerData={glove.fingerData}
+            isConnected={glove.gloveConnected}
+          />
+
+          {/* Camera PiP */}
           <AnimatePresence>
             {mlActive && (
               <motion.div
-                initial={{ opacity: 0, scale: 0.8, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.8, y: 20 }}
-                className="absolute bottom-4 right-4 w-44 h-32 rounded-xl overflow-hidden
-                  border border-accent/20 shadow-xl"
-              >
-                <video
-                  ref={videoRef}
-                  autoPlay playsInline muted
-                  className="w-full h-full object-cover"
-                  style={{ transform: 'scaleX(-1)' }}
-                />
-                <canvas
-  ref={canvasRef}
-  width={640} height={480}
-  className="absolute inset-0 w-full h-full"
-/>
-                <div className="absolute top-1.5 left-1.5 flex items-center gap-1
-                  bg-black/60 rounded-full px-2 py-0.5">
-                  <span className={`w-1 h-1 rounded-full ${handVisible ? 'bg-green-400 animate-pulse' : 'bg-white/30'}`} />
-                  <span className="text-[9px] font-mono text-white/70">
+                initial={{ opacity:0, scale:0.8, y:20 }}
+                animate={{ opacity:1, scale:1, y:0 }}
+                exit={{ opacity:0, scale:0.8, y:20 }}
+                style={{
+                  position:'absolute', bottom:16, right:16,
+                  width:160, height:120, borderRadius:10,
+                  overflow:'hidden', border:'1px solid rgba(74,127,165,0.3)',
+                  boxShadow:'0 4px 20px rgba(0,0,0,0.4)',
+                }}>
+                <video ref={videoRef} autoPlay playsInline muted
+                  style={{ width:'100%', height:'100%', objectFit:'cover', transform:'scaleX(-1)' }}/>
+                <canvas ref={canvasRef} width={640} height={480}
+                  style={{ position:'absolute', inset:0, width:'100%', height:'100%' }}/>
+                <div style={{
+                  position:'absolute', top:5, left:5,
+                  display:'flex', alignItems:'center', gap:4,
+                  padding:'2px 8px', borderRadius:20,
+                  background:'rgba(12,12,15,0.85)',
+                  border: handVisible ? '1px solid rgba(74,239,128,0.28)' : '1px solid var(--border)',
+                }}>
+                  <div style={{
+                    width:5, height:5, borderRadius:'50%',
+                    background: handVisible ? '#4ade80' : 'var(--text-muted)',
+                  }}/>
+                  <span style={{ fontSize:9, color: handVisible ? '#86efac' : 'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
                     {handVisible ? 'detected' : 'scanning'}
                   </span>
                 </div>
@@ -231,99 +270,104 @@ export default function HybridMode({ onGestureOutput }) {
           </AnimatePresence>
         </div>
 
-        {/* Right: output */}
-        <div className="lg:w-72 flex flex-col gap-3">
-          {/* Recognized */}
-          <div className="glass-raised rounded-2xl p-4 border border-white/5 flex-1 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] font-mono text-text-muted uppercase tracking-widest">
-                Recognized
-              </p>
-              {lastGesture && (
-                <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
-                  lastGesture.source === 'hardware'
-                    ? 'bg-blue-500/10 border-blue-500/20 text-blue-300'
-                    : lastGesture.source === 'both'
-                    ? 'bg-purple-500/10 border-purple-500/20 text-purple-300'
-                    : 'bg-green-500/10 border-green-500/20 text-green-300'
-                }`}>
-                  {lastGesture.source}
-                </span>
-              )}
-            </div>
-
-            {!anythingActive ? (
-              <div className="flex-1 flex items-center justify-center">
-                <p className="text-xs text-text-muted text-center font-body">
-                  Activate at least one input source
+        {/* Right: recognised + log */}
+        <div style={{ width:260, flexShrink:0, display:'flex', flexDirection:'column', gap:12 }}>
+          <div className="glass-raised rounded-2xl p-5 flex flex-col gap-3"
+            style={{ border:'1px solid var(--border)', flex:1 }}>
+            <p style={{ fontSize:10.5, color:'var(--text-muted)', fontFamily:'JetBrains Mono', letterSpacing:'0.12em', textTransform:'uppercase' }}>
+              Recognised
+            </p>
+            {!anyActive ? (
+              <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <p style={{ fontSize:13, color:'var(--text-muted)', textAlign:'center' }}>
+                  Activate an input source
                 </p>
               </div>
             ) : (
               <AnimatePresence mode="wait">
                 {lastGesture ? (
-                  <motion.div
-                    key={lastGesture.ts}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="flex flex-col gap-2"
-                  >
-                    <p className="font-display text-4xl font-light text-text-primary leading-tight">
+                  <motion.div key={lastGesture.ts}
+                    initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }}
+                    style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                    <p className="font-display font-light text-gradient"
+                      style={{ fontSize:42, lineHeight:1.05 }}>
                       {lastGesture.text}
                     </p>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-1 bg-white/8 rounded-full overflow-hidden">
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <div style={{
+                        flex:1, height:3, borderRadius:2, overflow:'hidden',
+                        background:'rgba(255,255,255,0.06)',
+                      }}>
                         <motion.div
-                          className="h-full bg-gradient-to-r from-accent to-accent-light rounded-full"
-                          initial={{ width: 0 }}
-                          animate={{ width: `${fusedConfidence}%` }}
-                          transition={{ duration: 0.6 }}
-                        />
+                          initial={{ width:0 }}
+                          animate={{ width:`${lastGesture.confidence}%` }}
+                          transition={{ duration:0.5 }}
+                          style={{
+                            height:'100%', borderRadius:2,
+                            background:'linear-gradient(90deg,var(--accent),var(--accent-light))',
+                          }}/>
                       </div>
-                      <span className="text-[10px] font-mono text-accent-light">
-                        {fusedConfidence}%
+                      <span style={{ fontSize:11, color:'var(--accent-light)', fontFamily:'JetBrains Mono' }}>
+                        {lastGesture.confidence}%
                       </span>
                     </div>
+                    <span style={{
+                      fontSize:10, fontFamily:'JetBrains Mono',
+                      padding:'2px 8px', borderRadius:20, alignSelf:'flex-start',
+                      background: lastGesture.source==='hardware'
+                        ? 'rgba(74,127,165,0.12)' : 'rgba(59,130,246,0.12)',
+                      border: lastGesture.source==='hardware'
+                        ? '1px solid rgba(74,127,165,0.22)' : '1px solid rgba(59,130,246,0.22)',
+                      color: lastGesture.source==='hardware' ? 'var(--accent-light)' : '#93c5fd',
+                    }}>
+                      via {lastGesture.source}
+                    </span>
                   </motion.div>
                 ) : (
-                  <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                    className="flex items-center gap-2">
-                    <div className="flex gap-1">
-                      {[0,1,2].map(i => (
-                        <motion.div key={i}
-                          className="w-1 h-1 rounded-full bg-accent/40"
-                          animate={{ opacity: [0.3,1,0.3], y:[0,-3,0] }}
-                          transition={{ duration:1, delay:i*0.2, repeat:Infinity }}
-                        />
-                      ))}
-                    </div>
-                    <p className="text-xs text-text-muted font-body">Reading…</p>
+                  <motion.div key="idle" initial={{ opacity:0 }} animate={{ opacity:1 }}
+                    style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    {[0,1,2].map(i => (
+                      <motion.div key={i}
+                        style={{ width:7, height:7, borderRadius:'50%', background:'var(--accent-muted)' }}
+                        animate={{ opacity:[0.3,1,0.3], y:[0,-5,0] }}
+                        transition={{ duration:1, delay:i*0.22, repeat:Infinity }}/>
+                    ))}
+                    <span style={{ fontSize:13, color:'var(--text-muted)', fontFamily:'DM Sans' }}>
+                      Reading…
+                    </span>
                   </motion.div>
                 )}
               </AnimatePresence>
             )}
           </div>
 
-          {/* History */}
-          {recognized.length > 0 && (
-            <div className="glass-raised rounded-2xl p-4 border border-white/5">
-              <p className="text-[10px] font-mono text-text-muted uppercase tracking-widest mb-3">
-                Session log
+          {log.length > 0 && (
+            <div className="glass-raised rounded-2xl p-4"
+              style={{ border:'1px solid var(--border)' }}>
+              <p style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'JetBrains Mono', letterSpacing:'0.12em', textTransform:'uppercase', marginBottom:10 }}>
+                Session
               </p>
-              <div className="flex flex-col gap-1.5">
-                {recognized.map((g, i) => (
+              <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                {log.map((g, i) => (
                   <motion.div key={g.id}
-                    initial={{ opacity: 0, x: -8 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: i * 0.04 }}
-                    className={`flex items-center justify-between text-xs font-body
-                      px-2 py-1.5 rounded-lg ${
-                      i === 0
-                        ? 'text-text-primary bg-accent/10 border border-accent/15'
-                        : 'text-text-muted'
-                    }`}
-                  >
+                    initial={{ opacity:0, x:-8 }} animate={{ opacity:1, x:0 }}
+                    transition={{ delay:i*0.04 }}
+                    style={{
+                      fontSize:13, fontFamily:'DM Sans',
+                      padding:'6px 10px', borderRadius:8,
+                      background: i===0 ? 'rgba(74,127,165,0.13)' : 'transparent',
+                      border: i===0 ? '1px solid rgba(74,127,165,0.20)' : '1px solid transparent',
+                      color: i===0 ? 'var(--text-primary)' : 'var(--text-muted)',
+                      display:'flex', alignItems:'center', justifyContent:'space-between',
+                    }}>
                     <span>{g.text}</span>
-                    <span className="text-[9px] font-mono opacity-50">{g.source}</span>
+                    <span style={{
+                      fontSize:9, fontFamily:'JetBrains Mono',
+                      color: g.source==='hardware' ? 'var(--accent-light)' : '#93c5fd',
+                      opacity:0.7,
+                    }}>
+                      {g.source?.slice(0,3)}
+                    </span>
                   </motion.div>
                 ))}
               </div>
@@ -331,6 +375,11 @@ export default function HybridMode({ onGestureOutput }) {
           )}
         </div>
       </div>
+
+      <style>{`
+        @keyframes spin  { to { transform:rotate(360deg) } }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+      `}</style>
     </div>
   )
 }

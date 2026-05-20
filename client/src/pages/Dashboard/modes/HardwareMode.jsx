@@ -2,91 +2,127 @@ import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Bluetooth, BluetoothOff, RefreshCw,
-  WifiOff, Usb, ChevronDown, AlertCircle
+  WifiOff, ChevronDown, AlertCircle,
 } from 'lucide-react'
-import Hand3DLive from '../../../components/ui/Hand3DLive'
+import Hand3DLive         from '../../../components/ui/Hand3DLive'
 import { useGloveWebSocket } from '../../../hooks/useGloveWebSocket'
-import { useGloveConnect } from '../../../hooks/useGloveConnect'
-import { useTTS } from '../../../hooks/useTTS'
+import { useGloveConnect }   from '../../../hooks/useGloveConnect'
+import { useTTS }            from '../../../hooks/useTTS'
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
+import { db } from '../../../firebase/config'
+import { useAuth } from '../../../context/AuthContext'
 
 export default function HardwareMode({ onGestureOutput }) {
-  const {
-    wsReady, gloveConnected,
-    fingerData, accelData,
-    lastGesture, error: wsError,
-  } = useGloveWebSocket()
-
-  const {
-    ports, fetchPorts, scanning,
-    selectedPort, setSelectedPort,
-    connecting, connectGlove, disconnectGlove,
-    error: connectError,
-  } = useGloveConnect()
-
-  const tts       = useTTS()
-  const spokenRef = useRef(null)
+  const glove  = useGloveWebSocket()
+  const conn   = useGloveConnect()
+  const tts    = useTTS()
+  const spoken = useRef(null)
   const [log, setLog] = useState([])
+  const { user } = useAuth()
 
-  useEffect(() => { fetchPorts() }, [])
+  useEffect(() => { 
+    // Try to auto-connect to Arduino on load
+    conn.fetchPorts(true) 
+  }, [])
 
+  // Speak + log recognised gesture
   useEffect(() => {
-    if (!lastGesture) return
-    if (lastGesture.ts === spokenRef.current) return
-    spokenRef.current = lastGesture.ts
-    tts.speak(lastGesture.text)
-    setLog(p => [{ ...lastGesture, id: lastGesture.ts }, ...p.slice(0,6)])
-    onGestureOutput?.(lastGesture.text)
-  }, [lastGesture])
+  if (!glove.lastGesture) return
+  if (glove.lastGesture.ts === spoken.current) return
+  spoken.current = glove.lastGesture.ts
+  tts.speak(glove.lastGesture.text)
+  setLog(p => [{ ...glove.lastGesture, id: glove.lastGesture.ts }, ...p.slice(0, 6)])
+  onGestureOutput?.(glove.lastGesture.text)
 
+  // Save to history
+  if (user) {
+    addDoc(collection(db, 'users', user.uid, 'history'), {
+      text:       glove.lastGesture.text,
+      confidence: glove.lastGesture.confidence,
+      mode:       'hardware',
+      createdAt:  serverTimestamp(),
+    }).catch(() => {})
+  }
+}, [glove.lastGesture])
   useEffect(() => {
-    if (!gloveConnected) { setLog([]); onGestureOutput?.('') }
-  }, [gloveConnected])
-
-  const err = connectError || wsError
+    if (!glove.gloveConnected) { setLog([]); onGestureOutput?.('') }
+  }, [glove.gloveConnected])
 
   return (
-    <div className="flex flex-col gap-4 h-full">
+    <div style={{ display:'flex', flexDirection:'column', gap:16, height:'100%' }}>
 
-      {/* ── Top bar: connection ───────────────────────────────── */}
-      <div className="glass-raised rounded-2xl px-5 py-4"
-        style={{ border:'1px solid var(--border)' }}>
-        <div className="flex flex-wrap items-center gap-3">
+      {/* ── Connection bar ─────────────────────────────────────── */}
+      <div className="glass-raised rounded-2xl"
+        style={{ padding:'16px 20px', border:'1px solid var(--border)' }}>
 
-          {/* Status dot + label */}
-          <div className="flex items-center gap-2 mr-2">
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${gloveConnected ? 'animate-pulse' : ''}`}
-              style={{ background: gloveConnected ? '#4ade80' : 'var(--text-muted)' }} />
-            <span className="font-body"
-              style={{ fontSize:14, color:'var(--text-primary)' }}>
-              {gloveConnected ? `Connected · ${selectedPort}` : 'SynTalk Glove'}
-            </span>
-            {!gloveConnected && (
-              <span style={{ fontSize:12, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
-                {wsReady ? '· Server ready' : '· Connecting to server…'}
+        {glove.gloveConnected ? (
+          /* Connected */
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <div style={{
+                width:9, height:9, borderRadius:'50%',
+                background:'#4ade80',
+                boxShadow:'0 0 8px rgba(74,222,128,0.6)',
+                animation:'glow 2s ease-in-out infinite',
+              }}/>
+              <span style={{ fontSize:14, color:'var(--text-primary)', fontFamily:'DM Sans', fontWeight:500 }}>
+                Connected · {glove.glovePort}
               </span>
-            )}
+              <span style={{ fontSize:12, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
+                · live streaming
+              </span>
+            </div>
+
+            <button
+              onClick={() => conn.disconnectGlove()}
+              style={{
+                display:'flex', alignItems:'center', gap:7,
+                padding:'7px 16px', borderRadius:10,
+                background:'rgba(239,68,68,0.10)',
+                border:'1px solid rgba(239,68,68,0.25)',
+                color:'#fca5a5', fontSize:13.5,
+                fontFamily:'DM Sans', cursor:'pointer',
+              }}
+            >
+              <BluetoothOff size={14}/> Disconnect
+            </button>
           </div>
 
-          {/* Port picker — compact, inline */}
-          {!gloveConnected && (
-            <>
-              <div className="relative flex-shrink-0">
+        ) : (
+          /* Disconnected */
+          <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+            <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+
+              {/* Label */}
+              <div style={{ display:'flex', alignItems:'center', gap:8, flex:1 }}>
+                <div style={{ width:9, height:9, borderRadius:'50%', background:'var(--text-muted)' }}/>
+                <span style={{ fontSize:14, color:'var(--text-primary)', fontFamily:'DM Sans' }}>
+                  Connect Glove
+                </span>
+                <span style={{ fontSize:12, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
+                  {glove.wsReady ? '· server ready' : '· connecting…'}
+                </span>
+              </div>
+
+              {/* Port select */}
+              <div style={{ position:'relative' }}>
                 <select
-                  value={selectedPort}
-                  onChange={e => setSelectedPort(e.target.value)}
-                  className="appearance-none pr-7 pl-3 py-2 rounded-xl font-mono
-                    outline-none cursor-pointer transition-colors"
+                  value={conn.selectedPort}
+                  onChange={e => conn.setSelectedPort(e.target.value)}
                   style={{
-                    fontSize:12.5,
-                    background:'rgba(20,20,28,0.9)',
+                    appearance:'none',
+                    paddingLeft:12, paddingRight:30, paddingTop:8, paddingBottom:8,
+                    borderRadius:10, outline:'none', cursor:'pointer',
+                    fontSize:13, fontFamily:'JetBrains Mono',
+                    background:'rgba(15,15,22,0.95)',
                     border:'1px solid var(--border)',
-                    color: selectedPort ? 'var(--text-primary)' : 'var(--text-muted)',
-                    minWidth: 130,
+                    color: conn.selectedPort ? 'var(--text-primary)' : 'var(--text-muted)',
+                    minWidth:140,
                   }}
                 >
-                  {ports.length === 0
+                  {conn.ports.length === 0
                     ? <option value="">No ports found</option>
-                    : ports.map(p => (
+                    : conn.ports.map(p => (
                         <option key={p.path} value={p.path}
                           style={{ background:'#13131a', color:'#eeeef2' }}>
                           {p.path}{p.isArduino ? ' ✓' : ''}
@@ -94,165 +130,189 @@ export default function HardwareMode({ onGestureOutput }) {
                       ))
                   }
                 </select>
-                <ChevronDown size={11} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
-                  style={{ color:'var(--text-muted)' }} />
+                <ChevronDown size={12} style={{
+                  position:'absolute', right:10, top:'50%',
+                  transform:'translateY(-50%)',
+                  pointerEvents:'none', color:'var(--text-muted)',
+                }}/>
               </div>
 
-              <button onClick={fetchPorts} disabled={scanning}
-                className="flex items-center justify-center w-8 h-8 rounded-xl transition-colors"
-                style={{ background:'rgba(255,255,255,0.04)', border:'1px solid var(--border)' }}>
-                <RefreshCw size={13} style={{ color:'var(--text-muted)' }}
-                  className={scanning ? 'animate-spin' : ''} />
-              </button>
-
+              {/* Refresh */}
               <button
-                onClick={() => connectGlove(selectedPort)}
-                disabled={connecting || !selectedPort}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl font-body
-                  transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={() => conn.fetchPorts()}
+                disabled={conn.scanning}
                 style={{
-                  fontSize:13.5,
-                  background:'var(--accent)',
-                  color:'#fff',
-                  boxShadow:'0 4px 20px rgba(74,127,165,0.25)',
+                  width:36, height:36, borderRadius:10, cursor:'pointer',
+                  background:'rgba(255,255,255,0.04)',
+                  border:'1px solid var(--border)',
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  opacity: conn.scanning ? 0.5 : 1,
                 }}
               >
-                {connecting
-                  ? <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                  : <Bluetooth size={13} />
-                }
-                {connecting ? 'Opening…' : 'Connect'}
+                <RefreshCw size={14} style={{ color:'var(--text-muted)' }}
+                  className={conn.scanning ? 'animate-spin' : ''}/>
               </button>
-            </>
-          )}
 
-          {gloveConnected && (
-            <button onClick={disconnectGlove}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl font-body
-                transition-all duration-200 ml-auto"
-              style={{
-                fontSize:13.5,
-                background:'rgba(239,68,68,0.1)',
-                border:'1px solid rgba(239,68,68,0.2)',
-                color:'#fca5a5',
-              }}>
-              <BluetoothOff size={13} /> Disconnect
-            </button>
-          )}
-
-          {err && (
-            <div className="flex items-center gap-1.5 ml-2"
-              style={{ color:'#f87171', fontSize:12 }}>
-              <AlertCircle size={12} /> {err}
+              {/* CONNECT */}
+              <button
+                onClick={async () => {
+                  if (!conn.selectedPort) { await conn.fetchPorts(); return }
+                  await conn.connectGlove(conn.selectedPort)
+                }}
+                disabled={conn.connecting || conn.scanning}
+                style={{
+                  display:'flex', alignItems:'center', gap:8,
+                  padding:'8px 22px', borderRadius:10,
+                  background: conn.connecting ? 'rgba(74,127,165,0.55)' : '#4a7fa5',
+                  color:'#fff', fontSize:14, fontFamily:'DM Sans', fontWeight:500,
+                  border:'none', outline:'none', cursor: conn.connecting ? 'wait' : 'pointer',
+                  boxShadow:'0 4px 18px rgba(74,127,165,0.30)',
+                  opacity: conn.connecting ? 0.75 : 1,
+                  transition:'all 0.2s',
+                }}
+              >
+                {conn.connecting
+                  ? <><div style={{
+                      width:14, height:14, borderRadius:'50%',
+                      border:'2px solid rgba(255,255,255,0.35)',
+                      borderTopColor:'#fff',
+                      animation:'spin 0.75s linear infinite',
+                    }}/> Opening…</>
+                  : <><Bluetooth size={14}/> Connect</>
+                }
+              </button>
             </div>
-          )}
-        </div>
 
-        {/* Arduino hint */}
-        {!gloveConnected && ports.length === 0 && !scanning && (
-          <p className="mt-2.5 font-mono"
-            style={{ fontSize:11, color:'var(--text-muted)' }}>
-            Plug in your Arduino via USB then click refresh.
-            Close Arduino IDE Serial Monitor if open.
-          </p>
+            {conn.error && (
+              <div style={{ display:'flex', alignItems:'center', gap:7, color:'#f87171', fontSize:12.5 }}>
+                <AlertCircle size={13}/> {conn.error}
+              </div>
+            )}
+
+            {conn.ports.length === 0 && !conn.scanning && (
+              <p style={{ fontSize:11.5, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
+                Plug Arduino via USB → Refresh. Close Arduino Serial Monitor if open.
+              </p>
+            )}
+          </div>
         )}
       </div>
 
-      {/* ── Main: 3D hand + output side by side ──────────────── */}
-      <div className="flex gap-4 flex-1 min-h-0">
+      {/* ── Main: 3D hand + output ─────────────────────────────── */}
+      <div style={{ display:'flex', gap:16, flex:1, minHeight:0 }}>
 
-        {/* 3D Hand — large, centrepiece */}
-        <div className="flex-1 glass-raised rounded-2xl overflow-hidden relative"
-          style={{ border:'1px solid var(--border)', minHeight:380 }}>
+        {/* 3D Hand */}
+        <div className="glass-raised rounded-2xl overflow-hidden"
+          style={{ flex:1, border:'1px solid var(--border)', minHeight:360, position:'relative' }}>
 
           {/* Idle overlay */}
-          <AnimatePresence>
-            {!gloveConnected && (
-              <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }}
-                className="absolute inset-0 z-10 flex flex-col items-center justify-end pb-6 pointer-events-none">
-                <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl"
-                  style={{ background:'rgba(19,19,26,0.85)', border:'1px solid var(--border)' }}>
-                  <WifiOff size={13} style={{ color:'var(--text-muted)' }} />
-                  <span style={{ fontSize:12.5, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
-                    Waiting for hardware connection…
-                  </span>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {!glove.gloveConnected && (
+            <div style={{
+              position:'absolute', inset:0, zIndex:10,
+              display:'flex', alignItems:'flex-end', justifyContent:'center',
+              paddingBottom:24, pointerEvents:'none',
+            }}>
+              <div style={{
+                display:'flex', alignItems:'center', gap:8,
+                padding:'10px 18px', borderRadius:12,
+                background:'rgba(12,12,15,0.90)',
+                border:'1px solid var(--border)',
+              }}>
+                <WifiOff size={13} style={{ color:'var(--text-muted)' }}/>
+                <span style={{ fontSize:12.5, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>
+                  Waiting for hardware connection…
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Live badge */}
-          <AnimatePresence>
-            {gloveConnected && (
-              <motion.div initial={{ opacity:0, scale:.9 }} animate={{ opacity:1, scale:1 }} exit={{ opacity:0 }}
-                className="absolute top-4 left-4 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full"
-                style={{ background:'rgba(19,19,26,0.85)', border:'1px solid rgba(74,239,128,0.22)' }}>
-                <span className="w-1.5 h-1.5 rounded-full animate-pulse"
-                  style={{ background:'#4ade80' }} />
-                <span style={{ fontSize:10, color:'#86efac', fontFamily:'JetBrains Mono', letterSpacing:'0.1em' }}>
-                  LIVE
-                </span>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {glove.gloveConnected && (
+            <div style={{
+              position:'absolute', top:14, left:14, zIndex:10,
+              display:'flex', alignItems:'center', gap:7,
+              padding:'5px 12px', borderRadius:20,
+              background:'rgba(12,12,15,0.85)',
+              border:'1px solid rgba(74,239,128,0.28)',
+            }}>
+              <div style={{
+                width:7, height:7, borderRadius:'50%',
+                background:'#4ade80',
+                animation:'glow 2s ease-in-out infinite',
+              }}/>
+              <span style={{
+                fontSize:10, color:'#86efac',
+                fontFamily:'JetBrains Mono', letterSpacing:'0.12em',
+              }}>
+                LIVE
+              </span>
+            </div>
+          )}
 
           <Hand3DLive
-            fingerData={fingerData}
-            accelData={accelData}
-            isConnected={gloveConnected}
+            fingerData={glove.fingerData}
+            isConnected={glove.gloveConnected}
           />
         </div>
 
-        {/* Right column: recognised + log */}
-        <div className="w-64 flex flex-col gap-3 flex-shrink-0">
+        {/* Right: recognised + session */}
+        <div style={{ width:260, flexShrink:0, display:'flex', flexDirection:'column', gap:12 }}>
 
-          {/* Recognised gesture */}
-          <div className="glass-raised rounded-2xl p-5 flex flex-col gap-3"
-            style={{ border:'1px solid var(--border)', flex:1 }}>
-            <p style={{ fontSize:10.5, color:'var(--text-muted)', fontFamily:'JetBrains Mono', letterSpacing:'0.12em', textTransform:'uppercase' }}>
+          {/* Recognised */}
+          <div className="glass-raised rounded-2xl"
+            style={{ padding:'20px', border:'1px solid var(--border)', flex:1, display:'flex', flexDirection:'column', gap:12 }}>
+            <p style={{
+              fontSize:10.5, color:'var(--text-muted)',
+              fontFamily:'JetBrains Mono', letterSpacing:'0.12em', textTransform:'uppercase',
+            }}>
               Recognised
             </p>
 
-            {!gloveConnected ? (
-              <div className="flex-1 flex items-center justify-center">
-                <p className="text-center font-body"
-                  style={{ fontSize:13, color:'var(--text-muted)' }}>
-                  Connect glove to start recognition
+            {!glove.gloveConnected ? (
+              <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <p style={{ fontSize:13, color:'var(--text-muted)', textAlign:'center', fontFamily:'DM Sans' }}>
+                  Connect glove to start
                 </p>
               </div>
             ) : (
               <AnimatePresence mode="wait">
-                {lastGesture ? (
-                  <motion.div key={lastGesture.ts}
-                    initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }}
-                    className="flex flex-col gap-3">
+                {glove.lastGesture ? (
+                  <motion.div key={glove.lastGesture.ts}
+                    initial={{ opacity:0, y:10 }} animate={{ opacity:1, y:0 }}
+                    style={{ display:'flex', flexDirection:'column', gap:10 }}>
                     <p className="font-display font-light text-gradient"
-                      style={{ fontSize:42, lineHeight:1.05 }}>
-                      {lastGesture.text}
+                      style={{ fontSize:46, lineHeight:1.0 }}>
+                      {glove.lastGesture.text}
                     </p>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-1 rounded-full overflow-hidden"
-                        style={{ background:'rgba(255,255,255,0.06)' }}>
-                        <motion.div className="h-full rounded-full"
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <div style={{
+                        flex:1, height:4, borderRadius:2, overflow:'hidden',
+                        background:'rgba(255,255,255,0.06)',
+                      }}>
+                        <motion.div
                           initial={{ width:0 }}
-                          animate={{ width:`${lastGesture.confidence}%` }}
-                          transition={{ duration:.6 }}
-                          style={{ background:'linear-gradient(90deg,var(--accent),var(--accent-light))' }}
+                          animate={{ width:`${glove.lastGesture.confidence}%` }}
+                          transition={{ duration:0.5 }}
+                          style={{
+                            height:'100%', borderRadius:2,
+                            background:'linear-gradient(90deg,var(--accent),var(--accent-light))',
+                          }}
                         />
                       </div>
                       <span style={{ fontSize:11, color:'var(--accent-light)', fontFamily:'JetBrains Mono' }}>
-                        {lastGesture.confidence}%
+                        {glove.lastGesture.confidence}%
                       </span>
                     </div>
                   </motion.div>
                 ) : (
-                  <motion.div key="idle" initial={{ opacity:0 }} animate={{ opacity:1 }}
-                    className="flex items-center gap-2">
+                  <motion.div key="idle"
+                    initial={{ opacity:0 }} animate={{ opacity:1 }}
+                    style={{ display:'flex', alignItems:'center', gap:8 }}>
                     {[0,1,2].map(i => (
-                      <motion.div key={i} className="w-1.5 h-1.5 rounded-full"
-                        style={{ background:'var(--accent-muted)' }}
-                        animate={{ opacity:[0.3,1,0.3], y:[0,-4,0] }}
-                        transition={{ duration:1, delay:i*0.2, repeat:Infinity }}
+                      <motion.div key={i}
+                        style={{ width:7, height:7, borderRadius:'50%', background:'var(--accent-muted)' }}
+                        animate={{ opacity:[0.3,1,0.3], y:[0,-5,0] }}
+                        transition={{ duration:1.0, delay:i*0.22, repeat:Infinity }}
                       />
                     ))}
                     <span style={{ fontSize:13, color:'var(--text-muted)', fontFamily:'DM Sans' }}>
@@ -266,21 +326,25 @@ export default function HardwareMode({ onGestureOutput }) {
 
           {/* Session log */}
           {log.length > 0 && (
-            <div className="glass-raised rounded-2xl p-4"
-              style={{ border:'1px solid var(--border)' }}>
-              <p className="mb-2.5" style={{ fontSize:10.5, color:'var(--text-muted)', fontFamily:'JetBrains Mono', letterSpacing:'0.12em', textTransform:'uppercase' }}>
+            <div className="glass-raised rounded-2xl"
+              style={{ padding:'14px 16px', border:'1px solid var(--border)' }}>
+              <p style={{
+                fontSize:10, color:'var(--text-muted)',
+                fontFamily:'JetBrains Mono', letterSpacing:'0.12em',
+                textTransform:'uppercase', marginBottom:10,
+              }}>
                 Session
               </p>
-              <div className="flex flex-col gap-1">
+              <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
                 {log.map((g, i) => (
                   <motion.div key={g.id}
                     initial={{ opacity:0, x:-8 }} animate={{ opacity:1, x:0 }}
                     transition={{ delay:i*0.04 }}
-                    className="px-2.5 py-1.5 rounded-lg font-body"
                     style={{
-                      fontSize: 13,
-                      background: i===0 ? 'rgba(74,127,165,0.12)' : 'transparent',
-                      border: i===0 ? '1px solid rgba(74,127,165,0.18)' : '1px solid transparent',
+                      fontSize:13, fontFamily:'DM Sans',
+                      padding:'6px 10px', borderRadius:8,
+                      background: i===0 ? 'rgba(74,127,165,0.13)' : 'transparent',
+                      border: i===0 ? '1px solid rgba(74,127,165,0.20)' : '1px solid transparent',
                       color: i===0 ? 'var(--text-primary)' : 'var(--text-muted)',
                     }}>
                     {g.text}
@@ -291,6 +355,14 @@ export default function HardwareMode({ onGestureOutput }) {
           )}
         </div>
       </div>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg) } }
+        @keyframes glow {
+          0%,100% { box-shadow: 0 0 6px rgba(74,222,128,0.5) }
+          50%      { box-shadow: 0 0 14px rgba(74,222,128,0.9) }
+        }
+      `}</style>
     </div>
   )
 }

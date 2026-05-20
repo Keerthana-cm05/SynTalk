@@ -1,20 +1,19 @@
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
-import { useAuth } from './context/AuthContext'
-import { AuthProvider } from './context/AuthContext'
+import { Routes, Route, Navigate } from 'react-router-dom'
+import { AuthProvider }   from './context/AuthContext'
 import { WelcomeProvider } from './context/WelcomeContext'
-import ProtectedRoute from './components/layout/ProtectedRoute'
-import DashboardLayout from './components/layout/DashboardLayout'
+import ProtectedRoute     from './components/layout/ProtectedRoute'
+import DashboardLayout    from './components/layout/DashboardLayout'
 
-import LandingPage             from './pages/Landing/LandingPage'
-import LoginPage               from './pages/Auth/LoginPage'
-import SignupPage              from './pages/Auth/SignupPage'
-import GestureSetupPlaceholder from './pages/Auth/GestureSetupPlaceholder'
+import LandingPage        from './pages/Landing/LandingPage'
+import LoginPage          from './pages/Auth/LoginPage'
+import SignupPage         from './pages/Auth/SignupPage'
+import GestureSetupPage   from './pages/Auth/GestureSetupPage'
 
-import MainDashboard   from './pages/Dashboard/MainDashboard'
-import TrainingPage    from './pages/Dashboard/TrainingPage'
-import HistoryPage     from './pages/Dashboard/HistoryPage'
-import EmergencyPage   from './pages/Dashboard/EmergencyPage'
-import SettingsPage    from './pages/Dashboard/SettingsPage'
+import MainDashboard      from './pages/Dashboard/MainDashboard'
+import TrainingPage       from './pages/Dashboard/TrainingPage'
+import HistoryPage        from './pages/Dashboard/HistoryPage'
+import EmergencyPage      from './pages/Dashboard/EmergencyPage'
+import SettingsPage       from './pages/Dashboard/SettingsPage'
 
 export default function App() {
   return (
@@ -23,38 +22,35 @@ export default function App() {
         <WelcomeProvider>
           <Routes>
             {/* Public */}
-            <Route path="/"       element={<LandingPage />} />
-            <Route path="/login"  element={<LoginPage />} />
-            <Route path="/signup" element={<SignupPage />} />
+            <Route path="/"       element={<LandingPage/>}/>
+            <Route path="/login"  element={<LoginPage/>}/>
+            <Route path="/signup" element={<SignupPage/>}/>
 
-            {/* Gesture setup */}
-            <Route
-              path="/gesture-setup"
+            {/* Gesture setup — after signup */}
+            <Route path="/gesture-setup"
               element={
                 <ProtectedRoute>
-                  <GestureSetupPlaceholder />
+                  <GestureSetupPage/>
                 </ProtectedRoute>
               }
             />
 
-            {/* Dashboard — protected nested */}
-            <Route
-              path="/dashboard"
+            {/* Dashboard — nested */}
+            <Route path="/dashboard"
               element={
                 <ProtectedRoute>
-                  <DashboardLayout />
+                  <DashboardLayout/>
                 </ProtectedRoute>
               }
             >
-              <Route index                element={<MainDashboard />} />
-              <Route path="training"      element={<TrainingPage />} />
-              <Route path="history"       element={<HistoryPage />} />
-              <Route path="emergency"     element={<EmergencyPage />} />
-              <Route path="settings"      element={<SettingsPage />} />
+              <Route index                element={<MainDashboard/>}/>
+              <Route path="training"      element={<TrainingPage/>}/>
+              <Route path="history"       element={<HistoryPage/>}/>
+              <Route path="emergency"     element={<EmergencyPage/>}/>
+              <Route path="settings"      element={<SettingsPage/>}/>
             </Route>
 
-            {/* Catch all */}
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/" replace/>}/>
           </Routes>
         </WelcomeProvider>
       </AuthProvider>

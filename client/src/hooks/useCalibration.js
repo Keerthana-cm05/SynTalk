@@ -1,116 +1,97 @@
 import { useRef, useState, useCallback } from 'react'
 
-// Persists calibration to localStorage so it survives page refresh
-const STORAGE_KEY = 'syntalk_calibration'
+const KEY = 'syntalk_cal_v3'
 
-const DEFAULT_CAL = {
-  min: [300, 300, 300, 300],
-  max: [700, 700, 700, 700],
-  trained: false,
-}
-
-function loadFromStorage() {
+function load() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved) return JSON.parse(saved)
+    const s = localStorage.getItem(KEY)
+    if (s) {
+      const c = JSON.parse(s)
+      // Validate it has real data
+      if (c.min && c.max && c.min.some((v,i) => c.max[i] - v > 20))
+        return c
+    }
   } catch {}
-  return { ...DEFAULT_CAL }
-}
-
-function saveToStorage(cal) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cal))
-  } catch {}
+  return null  // no valid calibration
 }
 
 export function useCalibration() {
-  const [calibration, setCalibration] = useState(() => loadFromStorage())
-  const [calibrating, setCalibrating] = useState(false)
-  const [calPhase,    setCalPhase]    = useState('idle') // idle | open | close | done
-  const openRef  = useRef([1023, 1023, 1023, 1023])
-  const closeRef = useRef([0, 0, 0, 0])
+  // Use refs for min/max so they update EVERY frame without React re-render lag
+  const minRef = useRef([1023, 1023, 1023, 1023])
+  const maxRef = useRef([0,    0,    0,    0   ])
 
-  // Normalize raw value using current calibration
-  const normalize = useCallback((raw) => {
-    if (!Array.isArray(raw) || raw.length < 4) return [0, 0, 0, 0]
-    const { min, max, trained } = calibration
-    return raw.map((v, i) => {
-      const lo = min[i]
-      const hi = max[i]
-      if (hi === lo) return 0
-      return Math.max(0, Math.min(1, (v - lo) / (hi - lo)))
-    })
-  }, [calibration])
+  // Load saved calibration into refs immediately
+  const saved = load()
+  if (saved && minRef.current[0] === 1023) {
+    minRef.current = [...saved.min]
+    maxRef.current = [...saved.max]
+  }
 
-  // Update calibration min/max from live data (auto-expand range)
-  const autoUpdate = useCallback((raw) => {
-    if (!Array.isArray(raw) || raw.length < 4) return
-    setCalibration(prev => {
-      const newMin = prev.min.map((m, i) => Math.min(m, raw[i]))
-      const newMax = prev.max.map((m, i) => Math.max(m, raw[i]))
-      const updated = { ...prev, min: newMin, max: newMax, trained: true }
-      saveToStorage(updated)
-      return updated
+  // Track if we have enough range to normalize properly
+  const [ready, setReady] = useState(() => {
+    if (!saved) return false
+    return saved.min.some((v, i) => saved.max[i] - v > 30)
+  })
+
+  // Called every frame with raw [i,m,r,p] integers
+  // Expands observed range and returns normalized [0-1] values immediately
+  const process = useCallback((raw) => {
+    if (!raw || raw.length < 4) return [0, 0, 0, 0]
+
+    let changed = false
+    const norm = raw.map((v, i) => {
+      // Expand range
+      if (v < minRef.current[i]) { minRef.current[i] = v; changed = true }
+      if (v > maxRef.current[i]) { maxRef.current[i] = v; changed = true }
+
+      const lo   = minRef.current[i]
+      const hi   = maxRef.current[i]
+      const span = hi - lo
+
+      // Not enough range yet — show raw proportion assuming 300-700 typical range
+      if (span < 20) {
+        return Math.max(0, Math.min(1, (v - 200) / 600))
+      }
+
+      return Math.max(0, Math.min(1, (v - lo) / span))
     })
+
+    // Save to localStorage periodically (not every frame — too expensive)
+    if (changed) {
+      const isReady = minRef.current.some((v, i) => maxRef.current[i] - v > 40)
+      if (isReady) {
+        setReady(true)
+        // Throttle saves
+        if (!process._saveTimer) {
+          process._saveTimer = setTimeout(() => {
+            try {
+              localStorage.setItem(KEY, JSON.stringify({
+                min: [...minRef.current],
+                max: [...maxRef.current],
+              }))
+            } catch {}
+            process._saveTimer = null
+          }, 1000)
+        }
+      }
+    }
+
+    return norm
   }, [])
 
-  // Manual calibration: Step 1 — capture open hand
-  function startCalibrateOpen() {
-    openRef.current  = [1023, 1023, 1023, 1023]
-    closeRef.current = [0, 0, 0, 0]
-    setCalPhase('open')
-    setCalibrating(true)
-  }
+  const reset = useCallback(() => {
+    minRef.current = [1023, 1023, 1023, 1023]
+    maxRef.current = [0,    0,    0,    0   ]
+    setReady(false)
+    try { localStorage.removeItem(KEY) } catch {}
+  }, [])
 
-  // Called with raw values during open-hand capture
-  function captureOpen(raw) {
-    if (!Array.isArray(raw)) return
-    openRef.current = raw.map((v, i) => Math.min(v, openRef.current[i]))
-  }
+  // Get current observed range for display
+  const getRange = useCallback(() => ({
+    min: [...minRef.current],
+    max: [...maxRef.current],
+    ready,
+  }), [ready])
 
-  // Manual calibration: Step 2 — capture closed fist
-  function startCalibrateClose() {
-    setCalPhase('close')
-  }
-
-  function captureClose(raw) {
-    if (!Array.isArray(raw)) return
-    closeRef.current = raw.map((v, i) => Math.max(v, closeRef.current[i]))
-  }
-
-  // Finish — save calibration
-  function finishCalibration() {
-    const newCal = {
-      min:     openRef.current.slice(),
-      max:     closeRef.current.slice(),
-      trained: true,
-    }
-    setCalibration(newCal)
-    saveToStorage(newCal)
-    setCalibrating(false)
-    setCalPhase('done')
-    console.log('✅ Calibration saved:', newCal)
-  }
-
-  function resetCalibration() {
-    const reset = { ...DEFAULT_CAL }
-    setCalibration(reset)
-    saveToStorage(reset)
-    setCalPhase('idle')
-    setCalibrating(false)
-  }
-
-  return {
-    calibration,
-    calibrating,
-    calPhase,
-    normalize,
-    autoUpdate,
-    startCalibrateOpen,
-    startCalibrateClose,
-    captureOpen,
-    captureClose,
-    finishCalibration,
-    resetCalibration,
-  }
+  return { process, reset, ready, getRange }
 }
