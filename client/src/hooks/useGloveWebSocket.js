@@ -7,8 +7,8 @@ const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5000/ws'
 // Start with wide defaults that guarantee visible movement immediately
 // Real range will auto-narrow as data flows in
 const cal = {
-  min:   [200, 200, 200, 200],   // assume open hand ~200-400
-  max:   [800, 800, 800, 800],   // assume closed fist ~600-800
+  min:   [0, 0, 0, 0],
+  max:   [40, 40, 40, 40],
   count: [0, 0, 0, 0],
 }
 

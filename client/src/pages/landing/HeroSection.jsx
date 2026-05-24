@@ -28,7 +28,7 @@ export default function HeroSection() {
         <motion.div variants={pill} className="inline-flex items-center gap-2 glass rounded-full px-4 py-2 mb-8 border border-accent/20">
           <span className="w-2 h-2 rounded-full bg-accent-light animate-pulse" />
           <span className="text-xs font-mono text-text-accent tracking-widest uppercase">
-            Final Year Project — ECE + AI
+            Briding Gestures & Speech
           </span>
         </motion.div>
 

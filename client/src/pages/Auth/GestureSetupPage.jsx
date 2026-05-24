@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate }      from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuth }          from '../../context/AuthContext'
@@ -10,15 +10,19 @@ import {
   Hand, ArrowRight, Camera, CheckCircle,
   Circle, Square, ChevronRight, Lock
 } from 'lucide-react'
+import { useGloveWebSocket } from '../../hooks/useGloveWebSocket'
+import { useGloveConnect }   from '../../hooks/useGloveConnect'
+import { sensorToFeatures }  from '../../utils/knnClassifier'
 
 const SAMPLES_NEEDED = 30
 const INTERVAL_MS    = 80
 
 const STEPS = [
-  { id: 'intro',    title: 'Welcome',         desc: 'Set up your gesture password and preferences' },
-  { id: 'record1',  title: 'Record Gesture 1', desc: 'This will be your login gesture' },
-  { id: 'record2',  title: 'Record Gesture 2', desc: 'A second gesture as backup' },
-  { id: 'done',     title: 'All Set!',          desc: 'Your gestures are saved' },
+  { id:'intro',     title:'Welcome',              desc:'Set up your gesture authentication' },
+  { id:'camera1',   title:'Camera Gesture 1',     desc:'Record a camera-based login gesture' },
+  { id:'camera2',   title:'Camera Gesture 2',     desc:'Record a second camera gesture' },
+  { id:'hardware',  title:'Hardware Gesture',     desc:'Record a glove-based login gesture' },
+  { id:'done',      title:'All Set!',              desc:'Your gestures are saved' },
 ]
 
 function StepIndicator({ current }) {
@@ -251,6 +255,192 @@ function GestureRecordStep({ stepNum, onDone }) {
   )
 }
 
+function HardwareSetupStep({ onDone }) {
+  const glove   = useGloveWebSocket()
+  const conn    = useGloveConnect()
+  const [phase, setPhase] = useState('idle')
+  const [count, setCount] = useState(0)
+  const [cd,    setCd]    = useState(3)
+  const buf     = useRef([])
+  const ticker  = useRef(null)
+  const cdTimer = useRef(null)
+
+  useEffect(() => { conn.fetchPorts() }, [])
+
+  function collect() {
+    const feat = sensorToFeatures(glove.fingerData)
+    if (!feat) return
+    buf.current.push(feat)
+    setCount(buf.current.length)
+    if (buf.current.length >= 40) finish()
+  }
+
+  function startCountdown() {
+    buf.current = []; setCount(0); setPhase('countdown')
+    let n = 3; setCd(n)
+    cdTimer.current = setInterval(() => {
+      n--
+      if (n <= 0) { clearInterval(cdTimer.current); startRecording() }
+      else setCd(n)
+    }, 1000)
+  }
+
+  function startRecording() {
+    setPhase('recording')
+    ticker.current = setInterval(collect, 60)
+  }
+
+  function finish() {
+    clearInterval(ticker.current)
+    setPhase('done')
+    onDone(buf.current)
+  }
+
+  function cancel() {
+    clearInterval(ticker.current); clearInterval(cdTimer.current)
+    buf.current = []; setCount(0); setPhase('idle')
+  }
+
+  const pct = Math.min(100, (count/40)*100)
+  const f   = glove.fingerData
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Glove connect */}
+      {!glove.gloveConnected ? (
+        <div className="glass rounded-xl p-4 flex flex-col gap-3"
+          style={{ border:'1px solid var(--border)' }}>
+          <p style={{ fontSize:13, color:'var(--text-secondary)' }}>
+            Connect your glove to record a hardware gesture
+          </p>
+          <div style={{ display:'flex', gap:8 }}>
+            <select
+              value={conn.selectedPort}
+              onChange={e => conn.setSelectedPort(e.target.value)}
+              style={{
+                flex:1, padding:'8px 12px', borderRadius:10, appearance:'none',
+                background:'rgba(255,255,255,0.05)', border:'1px solid var(--border)',
+                color:'var(--text-primary)', fontSize:13, fontFamily:'JetBrains Mono', outline:'none',
+              }}>
+              {conn.ports.length===0
+                ? <option>No ports found</option>
+                : conn.ports.map(p => (
+                    <option key={p.path} value={p.path}
+                      style={{ background:'#13131a', color:'#eeeef2' }}>
+                      {p.path}{p.isArduino?' ✓':''}
+                    </option>
+                  ))
+              }
+            </select>
+            <button onClick={() => conn.connectGlove(conn.selectedPort)}
+              disabled={conn.connecting}
+              style={{
+                padding:'8px 16px', borderRadius:10, cursor:'pointer',
+                background:'#4a7fa5', color:'#fff', border:'none', fontSize:13,
+              }}>
+              {conn.connecting ? '…' : 'Connect'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="glass rounded-xl p-4"
+          style={{ border:'1px solid rgba(74,239,128,0.2)' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+            <div style={{ width:7, height:7, borderRadius:'50%', background:'#4ade80', animation:'pulse 1s infinite' }}/>
+            <span style={{ fontSize:13, color:'#86efac' }}>Glove connected — hold your gesture steady</span>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            {[
+              {label:'I',val:f[1]??0},{label:'M',val:f[2]??0},
+              {label:'R',val:f[3]??0},{label:'P',val:f[4]??0},
+            ].map(({label,val}) => (
+              <div key={label} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
+                <div style={{ width:'100%', height:36, borderRadius:5, background:'rgba(255,255,255,0.06)', overflow:'hidden', position:'relative' }}>
+                  <div style={{
+                    position:'absolute', bottom:0, left:0, right:0,
+                    height:`${Math.max(2,val*100)}%`,
+                    background:'linear-gradient(180deg,var(--accent-light),var(--accent))',
+                    borderRadius:5, transition:'height 0.06s',
+                  }}/>
+                </div>
+                <span style={{ fontSize:9, color:'var(--text-muted)', fontFamily:'JetBrains Mono' }}>{label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Progress */}
+      {(phase==='recording'||phase==='done') && (
+        <div className="flex flex-col gap-1.5">
+          <div style={{ display:'flex', justifyContent:'space-between' }}>
+            <span style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'JetBrains Mono', textTransform:'uppercase', letterSpacing:'0.1em' }}>
+              {phase==='done'?'Complete':'Recording…'}
+            </span>
+            <span style={{ fontSize:11, color:'var(--accent-light)', fontFamily:'JetBrains Mono' }}>
+              {count}/40
+            </span>
+          </div>
+          <div style={{ height:5, borderRadius:3, overflow:'hidden', background:'rgba(255,255,255,0.06)' }}>
+            <motion.div animate={{ width:`${pct}%` }} transition={{ duration:0.1 }}
+              style={{
+                height:'100%', borderRadius:3,
+                background: phase==='done'
+                  ? 'linear-gradient(90deg,#22c55e,#4ade80)'
+                  : 'linear-gradient(90deg,var(--accent),var(--accent-light))',
+              }}/>
+          </div>
+        </div>
+      )}
+
+      <AnimatePresence>
+        {phase==='countdown' && (
+          <motion.div initial={{opacity:0,scale:0.6}} animate={{opacity:1,scale:1}} exit={{opacity:0}}
+            style={{ textAlign:'center', padding:'4px 0' }}>
+            <span className="font-display text-gradient" style={{ fontSize:56, lineHeight:1 }}>{cd}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {phase==='idle' && (
+        <button onClick={startCountdown} disabled={!glove.gloveConnected}
+          style={{
+            display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+            width:'100%', padding:'12px 0', borderRadius:12,
+            background: glove.gloveConnected ? '#4a7fa5' : 'rgba(74,127,165,0.28)',
+            color:'#fff', fontSize:14, fontFamily:'DM Sans', fontWeight:500,
+            border:'none', cursor: glove.gloveConnected ? 'pointer' : 'not-allowed',
+          }}>
+          <Circle size={13} fill="currentColor"/> Start Recording
+        </button>
+      )}
+
+      {(phase==='countdown'||phase==='recording') && (
+        <button onClick={cancel}
+          style={{
+            display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+            width:'100%', padding:'12px 0', borderRadius:12,
+            background:'rgba(239,68,68,0.10)', border:'1px solid rgba(239,68,68,0.22)',
+            color:'#fca5a5', fontSize:14, fontFamily:'DM Sans', cursor:'pointer',
+          }}>
+          <Square size={13} fill="currentColor"/> Cancel
+        </button>
+      )}
+
+      {phase==='done' && (
+        <div style={{
+          display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+          padding:'12px 0', borderRadius:12,
+          background:'rgba(34,197,94,0.10)', border:'1px solid rgba(34,197,94,0.22)',
+        }}>
+          <CheckCircle size={15} style={{ color:'#4ade80' }}/>
+          <span style={{ fontSize:14, color:'#86efac' }}>{count} samples recorded ✓</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function GestureSetupPage() {
   const { user, fetchUserProfile } = useAuth()
   const navigate     = useNavigate()
@@ -258,28 +448,37 @@ export default function GestureSetupPage() {
   const [gesture1,   setGesture1]   = useState(null)
   const [gesture2,   setGesture2]   = useState(null)
   const [saving,     setSaving]     = useState(false)
+  const [hwGesture,  setHwGesture]  = useState(null)
   
-
-  async function handleFinish() {
+async function handleFinish() {
   if (!user) return
   setSaving(true)
   try {
-    // 1. Write to Firestore FIRST — wait for it to complete
+    // Save hardware gesture to Firestore if recorded
+    if (hwGesture && hwGesture.length > 0) {
+      const { setDoc, doc } = await import('firebase/firestore')
+      await setDoc(
+        doc(db, 'users', user.uid, 'gestures', 'hardware_login_gesture'),
+        {
+          name:      'Login Gesture',
+          samples:   hwGesture.map(v => ({ v: Array.from(v) })),
+          source:    'hardware',
+          count:     hwGesture.length,
+          createdAt: (await import('firebase/firestore')).serverTimestamp(),
+        }
+      )
+    }
+
     await updateDoc(doc(db, 'users', user.uid), {
       gestureSetupComplete: true,
-      gestureSamplesCount:  (gesture1?.length || 0) + (gesture2?.length || 0),
+      gestureSamplesCount: (gesture1?.length||0) + (gesture2?.length||0) + (hwGesture?.length||0),
     })
 
-    // 2. Refresh the userProfile in AuthContext so ProtectedRoute sees the update
     await fetchUserProfile(user.uid)
-
-    // 3. Clear welcome so it shows on dashboard
     sessionStorage.removeItem('syntalk_welcomed')
-
-    // 4. Navigate AFTER everything is done
     navigate('/dashboard')
   } catch (e) {
-    console.error('handleFinish error:', e)
+    console.error('handleFinish:', e)
   } finally {
     setSaving(false)
   }
@@ -465,9 +664,37 @@ export default function GestureSetupPage() {
                 )}
               </motion.div>
             )}
+{/* Step 3 — Hardware gesture */}
+{step === 3 && (
+  <motion.div key="hardware"
+    initial={{ opacity:0, x:20 }} animate={{ opacity:1, x:0 }}
+    exit={{ opacity:0, x:-20 }}
+    className="flex flex-col gap-4"
+  >
+    <div>
+      <h2 className="font-display font-light"
+        style={{ fontSize:22, color:'var(--text-primary)', marginBottom:4 }}>
+        Hardware Gesture Login
+      </h2>
+      <p style={{ fontSize:13, color:'var(--text-muted)' }}>
+        Optional but recommended — use your glove to log in.
+      </p>
+    </div>
 
-            {/* Step 3 — Done */}
-            {step === 3 && (
+    <HardwareSetupStep onDone={samples => { setHwGesture(samples); setStep(4) }} />
+
+    <button
+      onClick={() => setStep(4)}
+      style={{
+        fontSize:13, color:'var(--text-muted)',
+        textAlign:'center', background:'none', border:'none', cursor:'pointer',
+      }}>
+      Skip hardware setup →
+    </button>
+  </motion.div>
+)}
+            {/* Step 4 — Done */}
+            {step === 4 && (
               <motion.div key="done"
                 initial={{ opacity:0, scale:0.95 }} animate={{ opacity:1, scale:1 }}
                 exit={{ opacity:0 }}

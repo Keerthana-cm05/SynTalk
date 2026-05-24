@@ -7,7 +7,13 @@ import {
 import { useGestureTrainer } from '../../hooks/useGestureTrainer'
 import { useGloveWebSocket } from '../../hooks/useGloveWebSocket'
 import GestureRecorder from '../../components/ui/GestureRecorder'
-import { cameraClassifier, hardwareClassifier, landmarksToFeatures, sensorToFeatures } from '../../utils/knnClassifier'
+import {
+  gestureClassifier,
+  cameraClassifier,
+  hardwareClassifier,
+  landmarksToFeatures,
+  sensorToFeatures,
+} from '../../utils/knnClassifier'
 import { useMediaPipe } from '../../hooks/useMediaPipe'
 
 

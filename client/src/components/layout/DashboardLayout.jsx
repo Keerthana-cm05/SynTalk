@@ -1,24 +1,29 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Outlet } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
-import DashboardSidebar from './DashboardSidebar'
-import WelcomeScreen from '../ui/WelcomeScreen'
-import { useAuth } from '../../context/AuthContext'
+import { Outlet }           from 'react-router-dom'
+import { motion }           from 'framer-motion'
+import DashboardSidebar     from './DashboardSidebar'
+import WelcomeScreen        from '../ui/WelcomeScreen'
+import { useAuth }          from '../../context/AuthContext'
 import { preloadGestureModel } from '../../hooks/useGestureTrainer'
 
 export default function DashboardLayout() {
-  const { user }                  = useAuth()
-  const [welcomed, setWelcomed]   = useState(false)
-  const [modelLoaded, setModelLoaded] = useState(false)
+  const { user }                        = useAuth()
+  const [welcomed,    setWelcomed]      = useState(false)
+  const [modelReady,  setModelReady]    = useState(false)
 
   useEffect(() => {
-    if (sessionStorage.getItem('syntalk_welcomed')) setWelcomed(true)
+    // Check if this session has already shown the welcome
+    const alreadyWelcomed = sessionStorage.getItem('syntalk_welcomed') === 'true'
+    if (alreadyWelcomed) {
+      setWelcomed(true)
+    }
+    // else welcomed stays false → WelcomeScreen renders
   }, [])
 
-  // Preload trained gesture model as soon as user is known
+  // Preload gesture model as soon as uid is known
   useEffect(() => {
     if (!user?.uid) return
-    preloadGestureModel(user.uid).finally(() => setModelLoaded(true))
+    preloadGestureModel(user.uid).finally(() => setModelReady(true))
   }, [user?.uid])
 
   const handleDone = useCallback(() => {
@@ -30,15 +35,15 @@ export default function DashboardLayout() {
 
   return (
     <>
-      <AnimatePresence>
-        {!welcomed && (
-          <WelcomeScreen
-            userName={firstName}
-            onComplete={handleDone}
-          />
-        )}
-      </AnimatePresence>
+      {/* Welcome screen — blocks dashboard until complete */}
+      {!welcomed && (
+        <WelcomeScreen
+          userName={firstName}
+          onComplete={handleDone}
+        />
+      )}
 
+      {/* Dashboard — only mounts after welcome */}
       {welcomed && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -49,7 +54,6 @@ export default function DashboardLayout() {
           <div className="sticky top-0 h-screen flex-shrink-0 z-20">
             <DashboardSidebar />
           </div>
-
           <main className="flex-1 overflow-y-auto min-w-0">
             <motion.div
               initial={{ opacity: 0, y: 10 }}

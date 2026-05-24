@@ -18,28 +18,25 @@ export function AuthProvider({ children }) {
 
   // Sign up with email & password
   async function signup(email, password, displayName) {
-    const result = await createUserWithEmailAndPassword(auth, email, password)
-
-    // Update display name in Firebase Auth
-    await updateProfile(result.user, { displayName })
-
-    // Create user document in Firestore
-    await setDoc(doc(db, 'users', result.user.uid), {
-      uid: result.user.uid,
-      displayName,
-      email,
-      createdAt: serverTimestamp(),
-      gestureSetupComplete: false,
-      settings: {
-        theme: 'dark',
-        fontSize: 'medium',
-        handMode: 'right',
-        language: 'en',
-      },
-    })
-
-    return result
-  }
+  const result = await createUserWithEmailAndPassword(auth, email, password)
+  await updateProfile(result.user, { displayName })
+  await setDoc(doc(db, 'users', result.user.uid), {
+    uid:                  result.user.uid,
+    displayName,
+    email,
+    createdAt:            serverTimestamp(),
+    gestureSetupComplete: false,
+    settings: {
+      theme:    'dark',
+      fontSize: 'medium',
+      handMode: 'right',
+      language: 'en',
+    },
+  })
+  // Clear welcome so it shows after setup
+  try { sessionStorage.removeItem('syntalk_welcomed') } catch {}
+  return result
+}
 
   // Sign out
   async function logout() {
@@ -61,6 +58,17 @@ export function AuthProvider({ children }) {
     }
     return null
   }
+useEffect(() => {
+  const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    setUser(firebaseUser)
+    if (firebaseUser) {
+      await fetchUserProfile(firebaseUser.uid)
+      try { localStorage.setItem('syntalk_last_uid', firebaseUser.uid) } catch {}
+    }
+    setLoading(false)
+  })
+  return unsubscribe
+}, [])
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -74,7 +82,14 @@ export function AuthProvider({ children }) {
     return unsubscribe
   }, [])
 async function login(email, password) {
-  return signInWithEmailAndPassword(auth, email, password)
+  const result = await signInWithEmailAndPassword(auth, email, password)
+  // Clear welcome so it plays on every fresh login
+  try {
+    sessionStorage.removeItem('syntalk_welcomed')
+    localStorage.setItem('syntalk_last_uid',   result.user.uid)
+    localStorage.setItem('syntalk_last_email', email)
+  } catch {}
+  return result
 }
   const value = {
     user,

@@ -95,3 +95,7 @@ body {
 }
 
 ::selection { background:rgba(74,127,165,0.28); color:#eeeef2; }
+/* Hover reveal utility */
+.group:hover .group-hover-show {
+  opacity: 1 !important;
+}
