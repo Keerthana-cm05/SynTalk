@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Menu, X } from 'lucide-react'
 
@@ -30,7 +31,7 @@ export default function Navbar() {
     >
       <div className="max-w-7xl mx-auto px-6 flex items-center justify-between">
         {/* Logo */}
-        <a href="/" className="flex items-center gap-2.5 group">
+        <Link to="/" className="flex items-center gap-2.5 group">
           <div className="relative w-8 h-8">
             <div className="absolute inset-0 rounded-lg bg-accent/20 group-hover:bg-accent/30 transition-colors duration-300" />
             <div className="absolute inset-1 rounded-md bg-gradient-to-br from-accent-light to-accent flex items-center justify-center">
@@ -40,7 +41,7 @@ export default function Navbar() {
           <span className="font-display text-xl font-semibold tracking-wide text-text-primary">
             Syn<span className="text-accent-light">Talk</span>
           </span>
-        </a>
+       </Link>
 
         {/* Desktop Nav */}
         <div className="hidden md:flex items-center gap-8">
@@ -56,20 +57,22 @@ export default function Navbar() {
         </div>
 
         {/* CTA */}
-        <div className="hidden md:flex items-center gap-3">
-          <a
-            href="/login"
-            className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-200 px-4 py-2"
-          >
-            Sign In
-          </a>
-          <a
-            href="/signup"
-            className="text-sm bg-accent hover:bg-accent-light transition-colors duration-200 text-white px-5 py-2.5 rounded-lg font-medium"
-          >
-            Get Started
-          </a>
-        </div>
+      
+<div className="hidden md:flex items-center gap-3">
+  <Link
+    to="/login"
+    className="text-sm text-text-secondary hover:text-text-primary transition-colors duration-200 px-4 py-2"
+  >
+    Sign In
+  </Link>
+
+  <Link
+    to="/signup"
+    className="text-sm bg-accent hover:bg-accent-light transition-colors duration-200 text-white px-5 py-2.5 rounded-lg font-medium"
+  >
+    Get Started
+  </Link>
+</div>
 
         {/* Mobile Menu Button */}
         <button
@@ -102,9 +105,20 @@ export default function Navbar() {
                 </a>
               ))}
               <div className="flex flex-col gap-2 pt-2 border-t border-white/5">
-                <a href="/login" className="text-center text-text-secondary border border-white/10 rounded-lg py-2.5 text-sm">Sign In</a>
-                <a href="/signup" className="text-center bg-accent text-white rounded-lg py-2.5 text-sm font-medium">Get Started</a>
-              </div>
+  <Link
+    to="/login"
+    className="text-center text-text-secondary border border-white/10 rounded-lg py-2.5 text-sm"
+  >
+    Sign In
+  </Link>
+
+  <Link
+    to="/signup"
+    className="text-center bg-accent text-white rounded-lg py-2.5 text-sm font-medium"
+  >
+    Get Started
+  </Link>
+</div>
             </div>
           </motion.div>
         )}
