@@ -5,7 +5,7 @@ import ProtectedRoute      from './components/layout/ProtectedRoute'
 import DashboardLayout     from './components/layout/DashboardLayout'
 import NotFound            from './pages/NotFound'
 
-import LandingPage         from './pages/Landing/LandingPage'
+import LandingPage         from './pages/landing/LandingPage'
 import LoginPage           from './pages/Auth/LoginPage'
 import SignupPage          from './pages/Auth/SignupPage'
 import GestureSetupPage    from './pages/Auth/GestureSetupPage'
